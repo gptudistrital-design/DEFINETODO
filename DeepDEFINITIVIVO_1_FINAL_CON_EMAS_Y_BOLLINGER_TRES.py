@@ -55,11 +55,11 @@ FEE_RATE = 0.0005
 MAX_CONCURRENT_TRADES = 50  # Máximo de operaciones simultáneas
 BB_LOOKBACK_CANDLES = 0   # 2 = más señales, 3 = más filtrado
 MOMENTUM_EXIT_ENABLED  = True
-MOMENTUM_EXIT_ROI_MAX  = -0.5    # Solo actúa si ROI < -0.5%
+MOMENTUM_EXIT_ROI_MAX  = -0.9    # Solo actúa si ROI < -0.5%
 
 # 🆕 SISTEMA DE RECUPERACIÓN MEJORADO
-ROI_CRITICAL_LOSS = -2.5  # ROI crítico para activar recuperación (más temprano)
-ROI_CRITICAL_PROFIT = 18.0  # ROI positivo para considerar "recuperado" (más bajo)
+ROI_CRITICAL_LOSS = -1.5  # ROI crítico para activar recuperación (más temprano)
+ROI_CRITICAL_PROFIT = 5.0  # ROI positivo para considerar "recuperado" (más bajo)
 ROI_RECOVERY_TARGET_1 = -3.0  # Primera meta de recuperación
 ROI_RECOVERY_TARGET_2 = -1.0  # Segunda meta (opcional)
 ROI_RECOVERY_TARGET_FINAL = 0.5  # Meta final (break-even + algo)
@@ -399,7 +399,7 @@ class ProfitTargetManager:
             })
             self.current_target  = self.base_amount # QUITE UN + ESTE ES EL ORIGNAL += 
             if getattr(self.bot, 'inversion_posiciones_PROBABLE'):  #  inversión por historial de pérdidas")
-                self.current_target *= 1.5  # Disminuir el target un 50% más si hay inversión por historial de pérdidas
+                self.current_target *= 1.0  # Disminuir el target un 50% más si hay inversión por historial de pérdidas
             else:
                 self.current_target *= 1.0  # Mantener el target base si no hay inversión por historial de pérdidas
                                     
@@ -407,8 +407,9 @@ class ProfitTargetManager:
             logger.info(f"🎯 Nuevo target: ${self.current_target:.2f}")
 
             # --- LÍNEA AÑADIDA (mínima): si ya hubo 2 ciclos, reiniciamos ---
-            #if len(self.target_history) >= 1:
-                #self.reset_for_new_cycle()
+            if len(self.target_history) > 2:
+                self.wait_hours = 0.5  # Reducir cooldown a 30 minutos después de 2 ciclos
+                self.target_history = []  # Limpiar historial para evitar crecimiento indefinido
             # -----------------------------------------------------------------
 
     def reset_for_new_cycle(self):
@@ -453,16 +454,19 @@ class ProfitTargetManager:
                 # Log de diagnóstico (muy útil al debuguear)
                 logger.debug(f"PTM: balance={balance:.2f}, daily_start={daily_start:.2f}, realized_gain={realized_gain:.2f}, target={target:.2f}")
 
-                if realized_gain >= target or realized_gain <= -10.5*target:  # Considerar también pérdida extrema
+                if realized_gain >= 10*target or realized_gain <= -0.75*target:  # Considerar también pérdida extrema
                     logger.info(f"PTM: Target alcanzado por ganancia realizada: ${realized_gain:.2f} >= ${target:.2f}")
-                    if realized_gain <= -10.5*target:
+                    if realized_gain <= -10.75*target:
                        if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
+                           
+                            logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balance.")  
                                  
-                            setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Activar inversión por historial de pérdidas")
+                            #setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Activar inversión por historial de pérdidas")
                        else: 
-                            setattr(self.bot, 'inversion_posiciones_PROBABLE', True) 
+                            #setattr(self.bot, 'inversion_posiciones_PROBABLE', True) 
+                             logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
                             
-                    elif realized_gain >= target:
+                    elif realized_gain >= 10 *target:
                         logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balance.")                     
                         
                     return True
@@ -477,18 +481,30 @@ class ProfitTargetManager:
                             combined = float(summary.get('combined_balance_gross', None))
 
                         if combined is not None:
+                            combined_LOSS = float(summary.get('total_unrealized_gross', 0.0))  # combined - daily_start
                             combined_gain = combined - daily_start
                             logger.debug(f"PTM: combined_balance={combined:.2f}, combined_gain={combined_gain:.2f}")
-                            if combined_gain >= target or combined_gain <= -10.5*target:  # Considerar también pérdida extrema
+                            if combined_gain >= target or combined_gain <= -1*target or combined_LOSS <= -1*target:  # Considerar también pérdida extrema
                                 logger.info(f"PTM: Target alcanzado por balance combinado (incluye PnL no realizado): ${combined_gain:.2f} >= ${target:.2f}")
-                                if combined_gain <= -10.5*target:
+                                if combined_LOSS <= -1.0*target:
                                     if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
-                                        setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Desactivar inversión por historial de pérdidas
+                                        # setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Desactivar inversión por historial de pérdidas
+                                        logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
                                     else:
                                         setattr(self.bot, 'inversion_posiciones_PROBABLE', True)  # Activar inversión por historial de pérdidas
-                                elif combined_gain >= target:
+                                elif combined_gain >= 0.85 * target:
                                     
                                     logger.debug("ProfitTargetManager: bot adjuntado, usando solo current_target check por balance.")
+                                    if len(self.target_history) >= 3:
+                                        self.reset_for_new_cycle()
+                                        self.target_history = 0  # Limpiar historial para el nuevo ciclo
+                                        if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
+                                            #setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Desactivar inversión por historial de pérdidas
+                                             logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
+                                        else:
+                                            #setattr(self.bot, 'inversion_posiciones_PROBABLE', True)  # Activar inversión por historial de pérdidas
+                                             logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
+                                        
                                     
                                 return True
 
@@ -1593,7 +1609,7 @@ class HeikinAshiTradingBot:
 
 
                 # 🎯 NUEVO: Sistema de Profit Targets
-        self.profit_target_manager = ProfitTargetManager(base_amount=20, wait_hours=0.1, bot=self, consider_unrealized=True, use_net_estimate=True)
+        self.profit_target_manager = ProfitTargetManager(base_amount=1.7, wait_hours=0.1, bot=self, consider_unrealized=True, use_net_estimate=True)
         self.in_cooldown = False
         self.cooldown_until = None
         self.cooldown_lock = threading.Lock()
@@ -2369,23 +2385,26 @@ class HeikinAshiTradingBot:
             else:
                     return {}                
             
-            # -------------- Nuevo check: historial de pérdidas por símbolo --------------
-            # try:
-            #     if signal_type and self._should_invert_signal_for_symbol(symbol, signal_type):
-            #         # invertir señal
-            #         original_signal = signal_type
-            #         signal_type = "LONG" if signal_type == "SHORT" else "SHORT"
-            #         logger.warning(f"🔄 Señal invertida para {symbol}: {original_signal} -> {signal_type} (por historial de pérdidas)")
-            # except Exception as e:
-            #     logger.debug(f"Error aplicando inversión por historial para {symbol}: {e}")
-            # ---------------------------------------------------------------------------
-            
+            #----------------------------------------------------------------------------
             if signal_type == "LONG" and self.inversion_posiciones_PROBABLE:
                 signal_type = "SHORT"
             elif signal_type == "SHORT" and self.inversion_posiciones_PROBABLE:
                 signal_type = "LONG"
                 
             # ---------------------------------------------------------------------------
+            
+                        # -------------- Nuevo check: historial de pérdidas por símbolo --------------
+            try:
+                 if signal_type and self._should_invert_signal_for_symbol(symbol, signal_type):
+                     # invertir señal
+                     original_signal = signal_type
+                     signal_type = "LONG" if signal_type == "SHORT" else "SHORT"
+                     logger.warning(f"🔄 Señal invertida para {symbol}: {original_signal} -> {signal_type} (por historial de pérdidas)")
+            except Exception as e:
+                 logger.debug(f"Error aplicando inversión por historial para {symbol}: {e}")
+            # ---------------------------------------------------------------------------
+            
+            
                 
             # Precio actual preferente desde WebSocket/cache
             current_price = self.data_cache.get_current_price(symbol)
@@ -3239,6 +3258,9 @@ class HeikinAshiTradingBot:
                     self.check_and_execute_inverse_pyramiding(symbol)
             except Exception as e:
                     logger.debug(f"Error ejecutando inverse pyramiding para {symbol}: {e}")
+                    
+            
+            pnl_summarys = self.compute_unrealized_pnl_summary()
 
 
 
@@ -3259,7 +3281,7 @@ class HeikinAshiTradingBot:
                             exit_signal = {
                                 'symbol': symbol,
                                 'exit_price': current_price,
-                                'exit_reason': f'PYRAMID_CLOSE_ROI (ROI={current_roi:.2f}% >= {threshold}%)',
+                                'exit_reason': f'PYRAMID_CLOSE_ROI (ROI={current_roi:.2f}% >= {threshold}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                 'timestamp': datetime.now()
                             }
                             try:
@@ -3275,7 +3297,7 @@ class HeikinAshiTradingBot:
                             exit_signal = {
                                 'symbol': symbol,
                                 'exit_price': current_price,
-                                'exit_reason': f'PYRAMID_CLOSE_ROI (ROI={current_roi:.2f}% <= {threshold}%)',
+                                'exit_reason': f'PYRAMID_CLOSE_ROI (ROI={current_roi:.2f}% <= {threshold}%) (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                 'timestamp': datetime.now()
                             }
                             try:
@@ -3324,7 +3346,7 @@ class HeikinAshiTradingBot:
                             exit_signal = {
                                 'symbol': symbol,
                                 'exit_price': current_price,
-                                'exit_reason': f'MAX_RECOVERY_ATTEMPTS (ROI: {current_roi:.2f}%)',
+                                'exit_reason': f'MAX_RECOVERY_ATTEMPTS (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                 'timestamp': datetime.now()
                             }
                             try:
@@ -3346,7 +3368,7 @@ class HeikinAshiTradingBot:
                         exit_signal = {
                             'symbol': symbol,
                             'exit_price': current_price,
-                            'exit_reason': f'RECOVERY_TRIGGER (ROI: {current_roi:.2f}%)',
+                            'exit_reason': f'RECOVERY_TRIGGER (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                             'timestamp': datetime.now()
                         }
                         
@@ -3384,7 +3406,7 @@ class HeikinAshiTradingBot:
                     exit_signal = {
                         'symbol': symbol,
                         'exit_price': current_price,
-                        'exit_reason': f'RECOVERY_SUCCESS (Combined ROI: {combined_roi:.2f}%)',
+                        'exit_reason': f'RECOVERY_SUCCESS (Combined ROI: {combined_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                         'timestamp': datetime.now()
                     }
                     logger.info(f"✅ ¡RECUPERACIÓN EXITOSA! {symbol} - ROI combinado: {combined_roi:.2f}%")
@@ -3398,7 +3420,7 @@ class HeikinAshiTradingBot:
                         exit_signal = {
                             'symbol': symbol,
                             'exit_price': current_price,
-                            'exit_reason': f'RECOVERY_FAILED (ROI: {current_roi:.2f}%, Combined: {combined_roi:.2f}%)',
+                            'exit_reason': f'RECOVERY_FAILED (ROI: {current_roi:.2f}%, Combined: {combined_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                             'timestamp': datetime.now()
                         }
                         logger.error(f"❌ Recuperación fallida definitiva: {symbol}")
@@ -3414,12 +3436,12 @@ class HeikinAshiTradingBot:
                     
                     # Definir razón específica
                     target_val = self.profit_target_manager.get_current_target()
-                    exit_reason = f"PROFIT_TARGET_REACHED (Target: ${target_val:.2f})"
+                    exit_reason = f"PROFIT_TARGET_REACHED (Target: ${target_val:.2f}), (PNL_ACTUAL={pnl_summarys['combined_balance_net_est']:.2f}%)"
                     
                     logger.warning(f"🎯 {symbol} cerrando por Objetivo Global alcanzado.")
 
                     exit_signal = {
-                        'symbol': symbol,
+                        'symbol': symbol,  
                         'exit_price': current_price,
                         'exit_reason': exit_reason,
                         'timestamp': datetime.now()
@@ -3453,7 +3475,7 @@ class HeikinAshiTradingBot:
                             momentum_exit_signal = {
                                 'symbol': symbol,
                                 'exit_price': current_price,
-                                'exit_reason': f'MOMENTUM_BEARISH_EXIT | LONG en pérdida (ROI: {current_roi:.2f}%)',
+                                'exit_reason': f'MOMENTUM_BEARISH_EXIT | LONG en pérdida (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                 'timestamp': datetime.now()
                             }
                             logger.warning(f"📉 Momentum BEARISH en LONG perdedor: {symbol} | ROI: {current_roi:.2f}%")
@@ -3463,7 +3485,7 @@ class HeikinAshiTradingBot:
                             momentum_exit_signal = {
                                 'symbol': symbol,
                                 'exit_price': current_price,
-                                'exit_reason': f'MOMENTUM_BULLISH_EXIT | SHORT en pérdida (ROI: {current_roi:.2f}%)',
+                                'exit_reason': f'MOMENTUM_BULLISH_EXIT | SHORT en pérdida (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                 'timestamp': datetime.now()
                             }
                             logger.warning(f"📈 Momentum BULLISH en SHORT perdedor: {symbol} | ROI: {current_roi:.2f}%")
@@ -3492,7 +3514,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
                                 # NO cerrar, continuar esperando
@@ -3500,7 +3522,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
                     
@@ -3514,7 +3536,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
 
@@ -3522,7 +3544,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_BELOW_EMA_LOW (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_BELOW_EMA_LOW (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
                 
@@ -3537,7 +3559,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
                                 
@@ -3546,7 +3568,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
                     
@@ -3559,7 +3581,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_ABOVE_EMA_HIGH (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
 
@@ -3567,7 +3589,7 @@ class HeikinAshiTradingBot:
                                 exit_signal = {
                                     'symbol': symbol,
                                     'exit_price': current_price,
-                                    'exit_reason': f'HA_CLOSE_BELOW_EMA_LOW (ROI: {current_roi:.2f}%)',
+                                    'exit_reason': f'HA_CLOSE_BELOW_EMA_LOW (ROI: {current_roi:.2f}%) , (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
                                     'timestamp': datetime.now()
                                 }
 
