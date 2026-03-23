@@ -1609,7 +1609,7 @@ class HeikinAshiTradingBot:
 
 
                 # 🎯 NUEVO: Sistema de Profit Targets
-        self.profit_target_manager = ProfitTargetManager(base_amount=1.7, wait_hours=0.1, bot=self, consider_unrealized=True, use_net_estimate=True)
+        self.profit_target_manager = ProfitTargetManager(base_amount=1.7, wait_hours=0.5, bot=self, consider_unrealized=True, use_net_estimate=True)
         self.in_cooldown = False
         self.cooldown_until = None
         self.cooldown_lock = threading.Lock()
@@ -3317,76 +3317,78 @@ class HeikinAshiTradingBot:
 
                     # ========== 🆕 SISTEMA DE RECUPERACIÓN MEJORADO ==========
 
-            if RECOVERY_MODE_ENABLED and not trade.is_recovery_mode:
-                # REGLA: Si ROI < -6.6% SIN señal de cierre = cambio de tendencia
-                if current_roi < ROI_CRITICAL_LOSS:
+            # if RECOVERY_MODE_ENABLED and not trade.is_recovery_mode:
+            #     # REGLA: Si ROI < -6.6% SIN señal de cierre = cambio de tendencia
+            #     if current_roi < ROI_CRITICAL_LOSS:
                     
-                    # Verificar si hay señal de cierre normal
-                    has_exit_signal = False
+            #         # Verificar si hay señal de cierre normal
+            #         has_exit_signal = False
 
                     
                     
-                    if trade.trade_type == "LONG":
-                        # LONG: señal de salida si vela cierra arriba de EMA_high
-                        if self.check_long_exit(last_barLOP):
-                            has_exit_signal = True
-                    else:  # SHORT
-                        # SHORT: señal de salida si vela cierra abajo de EMA_low
-                        if self.check_short_exit(last_barLOP):
-                            has_exit_signal = True
+            #         if trade.trade_type == "LONG":
+            #             # LONG: señal de salida si vela cierra arriba de EMA_high
+            #             if self.check_long_exit(last_barLOP):
+            #                 has_exit_signal = True
+            #         else:  # SHORT
+            #             # SHORT: señal de salida si vela cierra abajo de EMA_low
+            #             if self.check_short_exit(last_barLOP):
+            #                 has_exit_signal = True
                     
-                    # 🔥 SITUACIÓN CRÍTICA: ROI < -6.6% SIN señal de cierre
+            #         # 🔥 SITUACIÓN CRÍTICA: ROI < -6.6% SIN señal de cierre
 
-                    if not has_exit_signal:
-                        # 🆕 Verificar límite de intentos
-                        if trade.recovery_attempts >= trade.max_recovery_attempts:
-                            logger.error(f"❌ Límite de recuperación alcanzado para {symbol}")
+            #         if not has_exit_signal:
+            #             # 🆕 Verificar límite de intentos
+            #             if trade.recovery_attempts >= trade.max_recovery_attempts:
+            #                 logger.error(f"❌ Límite de recuperación alcanzado para {symbol}")
                             
-                            # Cerrar normalmente
-                            exit_signal = {
-                                'symbol': symbol,
-                                'exit_price': current_price,
-                                'exit_reason': f'MAX_RECOVERY_ATTEMPTS (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
-                                'timestamp': datetime.now()
-                            }
-                            try:
-                                self.exit_queue.put_nowait(exit_signal)
-                            except Full:
-                                pass
-                            return
+            #                 # Cerrar normalmente
+            #                 exit_signal = {
+            #                     'symbol': symbol,
+            #                     'exit_price': current_price,
+            #                     'exit_reason': f'MAX_RECOVERY_ATTEMPTS (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
+            #                     'timestamp': datetime.now()
+            #                 }
+            #                 try:
+            #                     self.exit_queue.put_nowait(exit_signal)
+            #                 except Full:
+            #                     pass
+            #                 return
                         
-                        logger.warning(f"⚠️ Activando recuperación para {symbol} (ROI: {current_roi:.2f}%)")
+            #             logger.warning(f"⚠️ Activando recuperación para {symbol} (ROI: {current_roi:.2f}%)")
                         
-                        # Incrementar contador
-                        trade.recovery_attempts += 1
+            #             # Incrementar contador
+            #             trade.recovery_attempts += 1
                         
-                        # Log detallado
-                        self.log_recovery_trigger(trade, current_price, 
-                            f"Critical ROI {current_roi:.2f}% without exit signal")
+            #             # Log detallado
+            #             self.log_recovery_trigger(trade, current_price, 
+            #                 f"Critical ROI {current_roi:.2f}% without exit signal")
                         
-                        # ✅ ENVIAR A LA COLA NORMAL (como cualquier otro cierre)
-                        exit_signal = {
-                            'symbol': symbol,
-                            'exit_price': current_price,
-                            'exit_reason': f'RECOVERY_TRIGGER (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
-                            'timestamp': datetime.now()
-                        }
+            #             # ✅ ENVIAR A LA COLA NORMAL (como cualquier otro cierre)
+            #             exit_signal = {
+            #                 'symbol': symbol,
+            #                 'exit_price': current_price,
+            #                 'exit_reason': f'RECOVERY_TRIGGER (ROI: {current_roi:.2f}%), (PNL_ACTUAL={pnl_summarys["combined_balance_net_est"]:.2f}%)',
+            #                 'timestamp': datetime.now()
+            #             }
                         
-                        try:
-                            self.exit_queue.put_nowait(exit_signal)
-                            logger.info(f"📤 Señal de cierre enviada para activar recuperación")
-                        except Full:
-                            logger.error(f"❌ Cola de salidas llena")
-                            return
+            #             try:
+            #                 self.exit_queue.put_nowait(exit_signal)
+            #                 logger.info(f"📤 Señal de cierre enviada para activar recuperación")
+            #             except Full:
+            #                 logger.error(f"❌ Cola de salidas llena")
+            #                 return
                         
-                        # ⏳ Esperar procesamiento
-                        time.sleep(2)
+            #             # ⏳ Esperar procesamiento
+            #             time.sleep(2)
                         
-                        # 🔄 Abrir recuperación
-                        self.open_recovery_trade(trade, current_price, 
-                            f"Critical ROI {current_roi:.2f}% without exit signal")
+            #             # 🔄 Abrir recuperación
+            #             self.open_recovery_trade(trade, current_price, 
+            #                 f"Critical ROI {current_roi:.2f}% without exit signal")
                         
-                        return
+            #             return
+            
+            
             
             # ========== VERIFICAR CONDICIONES DE SALIDA NORMALES ==========
             
