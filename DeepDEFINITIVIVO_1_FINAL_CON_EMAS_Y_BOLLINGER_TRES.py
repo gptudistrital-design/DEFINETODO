@@ -4773,7 +4773,7 @@ class HeikinAshiTradingBot:
 
                         # A. PAUSAR TRADING INMEDIATAMENTE
                         # Evita que se abran nuevas operaciones mientras intentamos cerrar todo
-                        self.pause_trading(seconds=300) # Pausa temporal de seguridad (5 min)
+                        self.pause_trading(seconds=self.profit_target_manager.wait_hours * 3600 ) # Pausa temporal de seguridad (5 min)
 
                         # B. ESPERAR A QUE SE CIERREN LAS POSICIONES
                         # check_exit_and_update está enviando las órdenes de cierre a la cola.
