@@ -82,6 +82,7 @@ MARTINGALE_MAX_TOTAL_MULT = 4.0   # tope absoluto de multiplicador con respecto 
 EMATOUCH_TOLERANCE = 0.002        # tolerancia para considerar "touch" a EMA200 (0.2%)
 
 # ----------------- Parámetros para bloqueo por historial de pérdidas -----------------
+SKIP_EXTREME_N = 2              # Top N gainers -> forzar LONG | Top N losers -> forzar SHORT
 LOSS_HISTORY_LEN = 10           # cuántos trades cerrados mirar hacia atrás
 LOSS_ROI_THRESHOLD = ROI_CRITICAL_LOSS      # umbral (ej: -8.0 significa pérdidas >= 8%)
 LOSS_MIN_COUNT = 1             # cuántas pérdidas que cumplan el umbral
@@ -484,15 +485,15 @@ class ProfitTargetManager:
                             combined_LOSS = float(summary.get('total_unrealized_gross', 0.0))  # combined - daily_start
                             combined_gain = combined - daily_start
                             logger.debug(f"PTM: combined_balance={combined:.2f}, combined_gain={combined_gain:.2f}")
-                            if combined_gain >= target or combined_gain <= -1*target or combined_LOSS <= -1*target:  # Considerar también pérdida extrema
+                            if combined_gain >= target or combined_gain <= -1.7*target or combined_LOSS <= -1.7*target:  # Considerar también pérdida extrema
                                 logger.info(f"PTM: Target alcanzado por balance combinado (incluye PnL no realizado): ${combined_gain:.2f} >= ${target:.2f}")
-                                if combined_LOSS <= -1.0*target:
+                                if combined_LOSS <= -1.7*target:
                                     if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
                                         # setattr(self.bot, 'inversion_posiciones_PROBABLE', False)  # Desactivar inversión por historial de pérdidas
                                         logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
                                     else:
                                         setattr(self.bot, 'inversion_posiciones_PROBABLE', True)  # Activar inversión por historial de pérdidas
-                                elif combined_gain >= 0.85 * target:
+                                elif combined_gain >= target:
                                     
                                     logger.debug("ProfitTargetManager: bot adjuntado, usando solo current_target check por balance.")
                                     if len(self.target_history) >= 3:
@@ -636,6 +637,17 @@ class DataCache:
                 logger.info("✅ WebSocket de precios detenido")
             except Exception as e:
                 logger.error(f"Error deteniendo WebSocket: {e}")
+
+    def clear_all(self):
+        """🔌 Limpia TODOS los datos del cache (klines + precios) para liberar memoria durante cooldown"""
+        with self.lock:
+            self.cache_1m.clear()
+            self.cache_5m.clear()
+            self.price_cache.clear()
+            self.last_update.clear()
+            self.ws_symbols.clear()
+        self.ws_price_cache = None
+        logger.info("🧹 DataCache limpiado completamente (klines 1m/5m, precios, timestamps)")
 
 
 # ==================== GESTOR DE ESTADO MEJORADO ====================
@@ -1609,13 +1621,17 @@ class HeikinAshiTradingBot:
 
 
                 # 🎯 NUEVO: Sistema de Profit Targets
-        self.profit_target_manager = ProfitTargetManager(base_amount=1.7, wait_hours=0.5, bot=self, consider_unrealized=True, use_net_estimate=True)
+        self.profit_target_manager = ProfitTargetManager(base_amount=1, wait_hours=0.1, bot=self, consider_unrealized=True, use_net_estimate=True)
         self.in_cooldown = False
         self.cooldown_until = None
         self.cooldown_lock = threading.Lock()
+        # 🔌 Flag para liberar/reiniciar recursos durante el cooldown
+        self._cooldown_resources_released = False
 
         # mapa de overrides por símbolo: { 'SYMBOL': {'invert_until': datetime, 'active': True} }
         self.symbol_signal_inversion_overrides = {}
+        # { 'BTCUSDT': 'LONG', 'XYZUSDT': 'SHORT' }  — extremos del ranking 24h
+        self.forced_direction_symbols: Dict[str, str] = {}
 
         
         # Threads
@@ -1789,11 +1805,43 @@ class HeikinAshiTradingBot:
             return pd.DataFrame()
     
     def get_top_gainers_losers(self, df: pd.DataFrame, top_n: int = 20) -> Tuple[List[str], List[str]]:
-        """Obtiene top gainers y losers"""
+        """Obtiene top gainers y losers del ranking 24h.
+        
+        - Ordena SIEMPRE por priceChangePercent DESC (los mas positivos arriba, los mas negativos abajo).
+        - Los primeros SKIP_EXTREME_N del ranking se marcan como LONG forzado.
+        - Los ultimos SKIP_EXTREME_N del ranking se marcan como SHORT forzado.
+        - La lista normal devuelta excluye esos extremos.
+        - Los extremos se guardan en self.forced_direction_symbols para usarlos en analyze_heikin_ashi_signal.
+        """
+        n = SKIP_EXTREME_N
+
         min_volume = df['volume'].quantile(0.3)
-        df_filtered = df[df['volume'] >= min_volume]
-        top_gainers = df_filtered.head(top_n)['symbol'].tolist()
-        top_losers = df_filtered.tail(top_n)['symbol'].tolist()
+        df_filtered = (
+            df[df['volume'] >= min_volume]
+            .sort_values('priceChangePercent', ascending=False)
+            .reset_index(drop=True)
+        )
+
+        # Primeros N: los que mas subieron en 24h -> LONG
+        extreme_gainers = df_filtered.iloc[:n]['symbol'].tolist()
+        # Ultimos N: los que mas bajaron en 24h -> SHORT
+        extreme_losers  = df_filtered.iloc[-n:]['symbol'].tolist()
+
+        # Lista normal: excluye los extremos de ambos lados
+        top_gainers = df_filtered.iloc[n : n + top_n]['symbol'].tolist()
+        top_losers  = df_filtered.iloc[-(top_n + n) : -n]['symbol'].tolist()
+
+        # Guardar en el bot para que analyze_heikin_ashi_signal lo consuma
+        forced = {}
+        for sym in extreme_gainers:
+            forced[sym] = 'LONG'
+        for sym in extreme_losers:
+            forced[sym] = 'SHORT'
+        self.forced_direction_symbols = forced
+
+        logger.info(f"[EXTREMOS 24h] LONG forzado: {extreme_gainers} | SHORT forzado: {extreme_losers}")
+        logger.info(f"[NORMALES]  Gainers: {len(top_gainers)} | Losers: {len(top_losers)}")
+
         return top_gainers, top_losers
     
     def update_monitored_symbols(self):
@@ -1820,9 +1868,13 @@ class HeikinAshiTradingBot:
                 self.monitored_symbols = set(self.monitored_symbols).union(active_symbols)
                 return
 
-            # 3. Obtener top gainers/losers
+            # 3. Obtener top gainers/losers  (los extremos quedan en self.forced_direction_symbols)
             top_gainers, top_losers = self.get_top_gainers_losers(ticker_stats, 40)
-            new_symbols_from_market = set((top_gainers or []) + (top_losers or []))
+            new_symbols_from_market = (
+                set(top_gainers or [])
+                | set(top_losers or [])
+                | set(getattr(self, 'forced_direction_symbols', {}).keys())
+            )
 
             # 4. COMBINAR: Nuevos símbolos + Símbolos activos
             combined_symbols = new_symbols_from_market.union(active_symbols)
@@ -2357,93 +2409,99 @@ class HeikinAshiTradingBot:
                 logger.error(f"❌ Error en btc_ema20_monitor_thread: {e}")
                 time.sleep(30)  # Retentar en 30 segundos en caso de error
 
+
     def analyze_heikin_ashi_signal(self, symbol: str) -> Dict:
 
-        try:
-            df_1m, _ = self.data_cache.get_data(symbol)
-            if df_1m is None or df_1m.empty or len(df_1m) < 100:
-                return {}
-            df = self.add_indicators(df_1m)
-            if df is None or df.empty or len(df) < 3:
-                return {}
-            # Usar la vela cerrada anterior para evitar señales sobre vela en formación
-            last_bar = df.iloc[-2]
-            signal_type = None
-
-            # if self.inversion_posiciones:
-            #     if self.check_short_entry(df, -2,symbol):
-            #         signal_type = "LONG"
-            #     elif self.check_long_entry(df, -2,symbol):
-            #         signal_type = "SHORT"
-            #     else:
-            #         return {}
-            # else:
-            if self.check_long_entry(df, -2,symbol): # and last_bar['open'] > last_bar['ema_20'] and last_bar['ema_20'] > last_bar['ema_70'] and last_bar['williams_r'] > -40:
-                    signal_type = "LONG"
-            elif self.check_short_entry(df, -2,symbol): # and last_bar['open'] < last_bar['ema_20'] and last_bar['ema_20'] < last_bar['ema_70'] and last_bar['williams_r'] < -60:
-                    signal_type = "SHORT"
-            else:
-                    return {}                
-            
-            #----------------------------------------------------------------------------
-            if signal_type == "LONG" and self.inversion_posiciones_PROBABLE:
-                signal_type = "SHORT"
-            elif signal_type == "SHORT" and self.inversion_posiciones_PROBABLE:
-                signal_type = "LONG"
-                
-            # ---------------------------------------------------------------------------
-            
-                        # -------------- Nuevo check: historial de pérdidas por símbolo --------------
             try:
-                 if signal_type and self._should_invert_signal_for_symbol(symbol, signal_type):
-                     # invertir señal
-                     original_signal = signal_type
-                     signal_type = "LONG" if signal_type == "SHORT" else "SHORT"
-                     logger.warning(f"🔄 Señal invertida para {symbol}: {original_signal} -> {signal_type} (por historial de pérdidas)")
+                df_1m, _ = self.data_cache.get_data(symbol)
+                if df_1m is None or df_1m.empty or len(df_1m) < 100:
+                    return {}
+                df = self.add_indicators(df_1m)
+                if df is None or df.empty or len(df) < 3:
+                    return {}
+                # Usar la vela cerrada anterior para evitar señales sobre vela en formación
+                last_bar = df.iloc[-2]
+                signal_type = None
+
+                # ----------------------------------------------------------------
+                # FILTRO: si la última vela de 1m cambió más del 1.4%, no operar.
+                # Evita entrar en momentos de volatilidad extrema puntual.
+                # ----------------------------------------------------------------
+                last_candle_change = abs(float(last_bar['close']) - float(last_bar['open'])) / float(last_bar['open']) * 100
+                if last_candle_change > 1.4:
+                    logger.debug(f"[FILTRO VELA] {symbol} bloqueado: cambio={last_candle_change:.2f}% > 1.4% en ultima vela 1m")
+                    return {}
+
+                # ----------------------------------------------------------------
+                # PASO 1: dirección forzada para los extremos del ranking 24h.
+                # Se evalúa PRIMERO para que el `return {}` del paso 2 no lo salte.
+                # ----------------------------------------------------------------
+                _forced = getattr(self, 'forced_direction_symbols', {}).get(symbol)
+                if _forced:
+                    signal_type = _forced
+                    logger.info(f"[FORCED DIR] {symbol} -> {signal_type} (extremo 24h)")
+                else:
+                    # PASO 2: señal orgánica normal
+                    if self.check_long_entry(df, -2, symbol):
+                        signal_type = "LONG"
+                    elif self.check_short_entry(df, -2, symbol):
+                        signal_type = "SHORT"
+                    else:
+                        return {}
+                
+                #----------------------------------------------------------------------------
+                if signal_type == "LONG" and self.inversion_posiciones_PROBABLE:
+                    signal_type = "SHORT"
+                elif signal_type == "SHORT" and self.inversion_posiciones_PROBABLE:
+                    signal_type = "LONG"
+                    
+                # ---------------------------------------------------------------------------
+                
+                # -------------- Nuevo check: historial de pérdidas por símbolo --------------
+                try:
+                    if signal_type and self._should_invert_signal_for_symbol(symbol, signal_type):
+                        original_signal = signal_type
+                        signal_type = "LONG" if signal_type == "SHORT" else "SHORT"
+                        logger.warning(f"🔄 Señal invertida para {symbol}: {original_signal} -> {signal_type} (por historial de pérdidas)")
+                except Exception as e:
+                    logger.debug(f"Error aplicando inversión por historial para {symbol}: {e}")
+                # ---------------------------------------------------------------------------
+                
+                # Precio actual preferente desde WebSocket/cache
+                current_price = self.data_cache.get_current_price(symbol)
+                if current_price is None:
+                    current_price = float(last_bar['close'])
+                    
+                # TP/SL inicial: simple y coherente con las bandas
+                if signal_type == "LONG":
+                    initial_tp = current_price/(-(ROI_CRITICAL_PROFIT/100)+1)
+                    initial_sl = current_price/(-(ROI_CRITICAL_LOSS/100)+1)
+                else:
+                    initial_tp = current_price/((ROI_CRITICAL_PROFIT/100)+1)
+                    initial_sl = current_price/((ROI_CRITICAL_LOSS/100)+1)
+
+                return {
+                    'symbol': symbol,
+                    'signal_type': signal_type,
+                    'current_price': float(current_price),
+                    'initial_tp': initial_tp,
+                    'initial_sl': initial_sl,
+                    'ema_200': float(last_bar['ema_200']),
+                    'bb_middle': float(last_bar['bb_middle']),
+                    'bb_upper': float(last_bar['bb_upper']),
+                    'bb_lower': float(last_bar['bb_lower']),
+                    'bb_width': float(last_bar['bb_width']),
+                    'open': float(last_bar['open']),
+                    'close': float(last_bar['close']),
+                    'high': float(last_bar['high']),
+                    'low': float(last_bar['low']),
+                }
+
             except Exception as e:
-                 logger.debug(f"Error aplicando inversión por historial para {symbol}: {e}")
-            # ---------------------------------------------------------------------------
-            
-            
-                
-            # Precio actual preferente desde WebSocket/cache
-            current_price = self.data_cache.get_current_price(symbol)
-            if current_price is None:
-                current_price = float(last_bar['close'])
-                
-            # TP/SL inicial: simple y coherente con las bandas
-            if signal_type == "LONG":
-                # initial_tp = float(last_bar['bb_upper'])
-                # initial_sl = float(last_bar['bb_lower'])
-                initial_tp = current_price/(-(ROI_CRITICAL_PROFIT/100)+1)
-                initial_sl = current_price/(-(ROI_CRITICAL_LOSS/100)+1)
-            else:
-                # initial_tp = float(last_bar['bb_lower'])
-                # initial_sl = float(last_bar['bb_upper'])
-                initial_tp = current_price/((ROI_CRITICAL_PROFIT/100)+1)
-                initial_sl = current_price/((ROI_CRITICAL_LOSS/100)+1)
+                logger.debug(f"Error analizando (EMA+BB) para {symbol}: {e}")
+                return {}
 
-            return {
-                'symbol': symbol,
-                'signal_type': signal_type,
-                'current_price': float(current_price),
-                'initial_tp': initial_tp,
-                'initial_sl': initial_sl,
-                'ema_200': float(last_bar['ema_200']),
-                'bb_middle': float(last_bar['bb_middle']),
-                'bb_upper': float(last_bar['bb_upper']),
-                'bb_lower': float(last_bar['bb_lower']),
-                'bb_width': float(last_bar['bb_width']),
-                'open': float(last_bar['open']),
-                'close': float(last_bar['close']),
-                'high': float(last_bar['high']),
-                'low': float(last_bar['low']),
-            }
 
-        except Exception as e:
-            logger.debug(f"Error analizando (EMA+BB) para {symbol}: {e}")
-            return {}
-        
         
 # ---------------- Helper: decidir si invertir señal por historial ----------------
     def _should_invert_signal_for_symbol(self, symbol: str, signal_type: str,
@@ -4732,6 +4790,87 @@ class HeikinAshiTradingBot:
             logger.error(traceback.format_exc())
 
 
+    # ==================== GESTIÓN DE RECURSOS DURANTE COOLDOWN ====================
+
+    def _release_resources_for_cooldown(self):
+        """
+        🔌 Libera todos los recursos pesados al entrar en cooldown:
+        - Detiene KlineWebSocketCache
+        - Detiene WebSocket de precios
+        - Limpia todo el cache de klines (1m + 5m) y precios
+        
+        Objetivo: reducir consumo de RAM/CPU/conexiones mientras el bot descansa.
+        """
+        logger.info("🔌 Liberando recursos para cooldown...")
+
+        # 1. Detener KlineWebSocketCache
+        if self.kline_ws_cache is not None:
+            try:
+                self.kline_ws_cache.stop()
+                logger.info("   ✅ KlineWebSocketCache detenido")
+            except Exception as e:
+                logger.error(f"   ❌ Error deteniendo kline_ws_cache: {e}")
+            finally:
+                self.kline_ws_cache = None
+
+        # 2. Detener WebSocket de precios
+        try:
+            self.data_cache.stop_websocket()
+            logger.info("   ✅ WebSocket de precios detenido")
+        except Exception as e:
+            logger.error(f"   ❌ Error deteniendo WebSocket de precios: {e}")
+
+        # 3. Limpiar todo el cache (klines 1m/5m + precios)
+        try:
+            self.data_cache.clear_all()
+            logger.info("   ✅ Cache de klines y precios limpiado")
+        except Exception as e:
+            logger.error(f"   ❌ Error limpiando data_cache: {e}")
+
+        self._cooldown_resources_released = True
+        logger.warning("🛑 RECURSOS LIBERADOS — Bot en reposo durante cooldown")
+
+    def _reinitialize_resources_after_cooldown(self):
+        """
+        🔄 Reinicia todos los recursos desde cero al terminar el cooldown:
+        - Refresca la lista de símbolos
+        - Reinicia WebSocket de precios
+        - Reinicia KlineWebSocketCache con backfill
+        
+        Objetivo: arrancar el nuevo ciclo de trading con datos frescos.
+        """
+        logger.info("🔄 Reiniciando recursos después del cooldown...")
+
+        try:
+            # 1. Refrescar lista de símbolos
+            logger.info("   🔍 Actualizando lista de símbolos...")
+            self.update_monitored_symbols()
+            symbols_list = list(self.monitored_symbols)
+
+            if not symbols_list:
+                logger.warning("   ⚠️ Sin símbolos monitoreados — reintentando en próximo ciclo")
+                return
+
+            # 2. Reiniciar WebSocket de precios
+            self.data_cache.initialize_websocket(symbols_list)
+            logger.info(f"   ✅ WebSocket de precios reiniciado ({len(symbols_list)} símbolos)")
+
+            # 3. Reiniciar KlineWebSocketCache (con backfill de histórico)
+            self._init_kline_cache(symbols_list)
+            logger.info(f"   ✅ KlineWebSocketCache reiniciado ({len(symbols_list)} símbolos, backfill ON)")
+
+            # 4. Esperar a que los WS carguen datos iniciales antes de operar
+            logger.info("   ⏳ Esperando carga inicial de datos (10s)...")
+            time.sleep(10)
+
+            self._cooldown_resources_released = False
+            logger.warning("✅ RECURSOS REINICIADOS — Sistema listo para nuevo ciclo de trading")
+
+        except Exception as e:
+            logger.error(f"❌ Error reiniciando recursos tras cooldown: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
     # ==================== NUEVO THREAD ====================
 
     def profit_target_monitor_thread(self):
@@ -4755,6 +4894,10 @@ class HeikinAshiTradingBot:
                     if self.is_in_cooldown():
                         remaining_seconds = (self.cooldown_until - datetime.now()).total_seconds()
                         if remaining_seconds > 0:
+                            # 🔌 Liberar recursos si aún no se hizo
+                            if not self._cooldown_resources_released:
+                                self._release_resources_for_cooldown()
+
                             if int(remaining_seconds) % 3600 == 0: # Log cada hora
                                 logger.info(f"⏳ En cooldown: {remaining_seconds / 3600:.1f} horas restantes")
                             time.sleep(check_interval)
@@ -4762,6 +4905,10 @@ class HeikinAshiTradingBot:
                         else:
                             # El cooldown terminó automáticamente en is_in_cooldown(), seguimos.
                             pass
+                    
+                    # 🔄 Cooldown terminó: reiniciar recursos si estaban liberados
+                    if self._cooldown_resources_released:
+                        self._reinitialize_resources_after_cooldown()
                     
                     # 2. Verificar si se alcanzó el target
                     # Nota: check_exit_and_update también lee esto para cerrar posiciones individuales
@@ -4773,7 +4920,11 @@ class HeikinAshiTradingBot:
 
                         # A. PAUSAR TRADING INMEDIATAMENTE
                         # Evita que se abran nuevas operaciones mientras intentamos cerrar todo
-                        self.pause_trading(seconds=self.profit_target_manager.wait_hours * 3600 ) # Pausa temporal de seguridad (5 min)
+                        if len(self.profit_target_manager.target_history) < 2:
+                            self.pause_trading(seconds=self.profit_target_manager.wait_hours * 3600 ) # Pausa temporal de seguridad (5 min)
+                        else:
+                            self.pause_trading(seconds=1800) # Pausa temporal de seguridad (1 min)
+                            self.profit_target_manager.target_history = []
 
                         # B. ESPERAR A QUE SE CIERREN LAS POSICIONES
                         # check_exit_and_update está enviando las órdenes de cierre a la cola.
@@ -4810,7 +4961,16 @@ class HeikinAshiTradingBot:
                         logger.info(f"💾 Nuevo balance base para cálculo: ${self.daily_start_balance:.2f}")
 
                         # 3. Activar el Cooldown largo
-                        self.set_cooldown(hours=self.profit_target_manager.wait_hours)
+                        if len(self.profit_target_manager.target_history) < 2:
+                            self.set_cooldown(hours=self.profit_target_manager.wait_hours) # Cooldown completo
+                        else:
+                            self.set_cooldown(hours=0.5) # Cooldown reducido para targets incrementales
+
+                        # 🔌 Liberar recursos inmediatamente al entrar en cooldown
+                        self._release_resources_for_cooldown()
+                            
+                            
+                        
                         
                         logger.warning("✅ CICLO COMPLETADO - Bot entra en reposo.")
                         self.Bandera_de_Cierre_por_target = False
