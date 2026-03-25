@@ -493,7 +493,7 @@ class ProfitTargetManager:
                                         logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
                                     else:
                                         setattr(self.bot, 'inversion_posiciones_PROBABLE', True)  # Activar inversión por historial de pérdidas
-                                elif combined_gain >= target:
+                                elif combined_gain >= (target/2.5):
                                     
                                     logger.debug("ProfitTargetManager: bot adjuntado, usando solo current_target check por balance.")
                                     if len(self.target_history) >= 3:
