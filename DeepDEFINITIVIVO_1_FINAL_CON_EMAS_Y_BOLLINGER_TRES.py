@@ -485,7 +485,7 @@ class ProfitTargetManager:
                             combined_LOSS = float(summary.get('total_unrealized_gross', 0.0))  # combined - daily_start
                             combined_gain = combined - daily_start
                             logger.debug(f"PTM: combined_balance={combined:.2f}, combined_gain={combined_gain:.2f}")
-                            if combined_gain >= target or combined_gain <= -1.7*target or combined_LOSS <= -1.7*target:  # Considerar también pérdida extrema
+                            if combined_gain >= (target/7) or combined_gain <= -1.7*target or combined_LOSS <= -1.7*target:  # Considerar también pérdida extrema
                                 logger.info(f"PTM: Target alcanzado por balance combinado (incluye PnL no realizado): ${combined_gain:.2f} >= ${target:.2f}")
                                 if combined_LOSS <= -1.7*target:
                                     if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
@@ -493,7 +493,7 @@ class ProfitTargetManager:
                                         logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balanc.")  
                                     else:
                                         setattr(self.bot, 'inversion_posiciones_PROBABLE', True)  # Activar inversión por historial de pérdidas
-                                elif combined_gain >= (target/2.5):
+                                elif combined_gain >= (target/7):
                                     
                                     logger.debug("ProfitTargetManager: bot adjuntado, usando solo current_target check por balance.")
                                     if len(self.target_history) >= 3:
