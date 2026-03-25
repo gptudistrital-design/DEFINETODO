@@ -1621,7 +1621,7 @@ class HeikinAshiTradingBot:
 
 
                 # 🎯 NUEVO: Sistema de Profit Targets
-        self.profit_target_manager = ProfitTargetManager(base_amount=10, wait_hours=0.1, bot=self, consider_unrealized=True, use_net_estimate=True)
+        self.profit_target_manager = ProfitTargetManager(base_amount=10, wait_hours=0.5, bot=self, consider_unrealized=True, use_net_estimate=True)
         self.in_cooldown = False
         self.cooldown_until = None
         self.cooldown_lock = threading.Lock()
