@@ -455,9 +455,9 @@ class ProfitTargetManager:
                 # Log de diagnóstico (muy útil al debuguear)
                 logger.debug(f"PTM: balance={balance:.2f}, daily_start={daily_start:.2f}, realized_gain={realized_gain:.2f}, target={target:.2f}")
 
-                if realized_gain >= 10*target or realized_gain <= -0.25*target:  # Considerar también pérdida extrema
+                if realized_gain >= 10*target or realized_gain <= -0.5*target:  # Considerar también pérdida extrema
                     logger.info(f"PTM: Target alcanzado por ganancia realizada: ${realized_gain:.2f} >= ${target:.2f}")
-                    if realized_gain <= -0.25*target:
+                    if realized_gain <= -0.5*target:
                        if getattr(self.bot, 'inversion_posiciones_PROBABLE'):
                            
                             logger.debug("ProfitTargetManager: bot  adjuntado, usando solo current_target check por balance.")  
